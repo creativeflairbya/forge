@@ -28,8 +28,10 @@ export async function POST(req: Request) {
   if (!ok) {
     return Response.json({ error: "Invalid credentials" }, { status: 401 });
   }
-  await createSessionCookie();
-  return Response.json({ ok: true });
+  const token = await createSessionCookie();
+  // Token also returned for clients where cookies are blocked (mobile
+  // Safari / iframe previews) — stored in localStorage, sent via header.
+  return Response.json({ ok: true, token });
 }
 
 export async function DELETE() {

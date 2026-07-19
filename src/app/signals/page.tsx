@@ -3,8 +3,26 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { apiFetch, clearToken } from "@/lib/client";
 
-const SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT", "ADAUSDT", "DOGEUSDT", "AVAXUSDT"];
+const SYMBOLS: { v: string; l: string }[] = [
+  { v: "BTCUSDT", l: "BTC/USDT — Bitcoin" },
+  { v: "ETHUSDT", l: "ETH/USDT — Ethereum" },
+  { v: "SOLUSDT", l: "SOL/USDT — Solana" },
+  { v: "BNBUSDT", l: "BNB/USDT — BNB" },
+  { v: "XRPUSDT", l: "XRP/USDT — Ripple" },
+  { v: "ADAUSDT", l: "ADA/USDT — Cardano" },
+  { v: "DOGEUSDT", l: "DOGE/USDT — Dogecoin" },
+  { v: "AVAXUSDT", l: "AVAX/USDT — Avalanche" },
+  { v: "PAXGUSDT", l: "Gold — PAXG/USDT (tracks XAU/USD)" },
+  { v: "LINKUSDT", l: "LINK/USDT — Chainlink" },
+  { v: "DOTUSDT", l: "DOT/USDT — Polkadot" },
+  { v: "LTCUSDT", l: "LTC/USDT — Litecoin" },
+  { v: "TRXUSDT", l: "TRX/USDT — Tron" },
+  { v: "NEARUSDT", l: "NEAR/USDT — Near" },
+  { v: "SHIBUSDT", l: "SHIB/USDT — Shiba Inu" },
+  { v: "PEPEUSDT", l: "PEPE/USDT — Pepe" },
+];
 const INTERVALS = ["15m", "1h", "4h", "1d"];
 
 type Reason = { name: string; verdict: string; detail: string; weight: number };
@@ -44,13 +62,15 @@ export default function SignalsPage() {
   const [loading, setLoading] = useState(false);
   const [scan, setScan] = useState<ScanRow[]>([]);
   const [denied, setDenied] = useState("");
+  const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
 
   const loadSignal = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await fetch(`/api/signals?symbol=${symbol}&interval=${interval}`);
+      const res = await apiFetch(`/api/signals?symbol=${symbol}&interval=${interval}`);
       if (res.status === 401) {
+        clearToken(); // stale/expired token — clean it up before re-login
         router.push("/login");
         return;
       }
@@ -61,38 +81,114 @@ export default function SignalsPage() {
       }
       if (d.signal) setSignal(d.signal);
       if (d.candles) setCandles(d.candles);
+      setLastUpdated(new Date());
     } finally {
       setLoading(false);
     }
   }, [symbol, interval, router]);
 
   const loadScan = useCallback(async () => {
-    const res = await fetch(`/api/signals?scan=1&interval=${interval}`);
-    const d = await res.json();
-    if (d.signals) setScan(d.signals);
+    try {
+      const res = await apiFetch(`/api/signals?scan=1&interval=${interval}`);
+      const d = await res.json();
+      if (d.signals) setScan(d.signals);
+    } catch {}
   }, [interval]);
 
+  // Auto-refresh the signal every 1s (NOTE: window.setInterval — the local
+  // state setter `setInterval` shadows the global in this component scope).
+  // An in-flight guard prevents overlapping requests from stacking up when a
+  // response takes longer than one second.
+  const busyRef = useRef(false);
   useEffect(() => {
-    loadSignal();
+    const tick = async () => {
+      if (busyRef.current) return;
+      busyRef.current = true;
+      try {
+        await loadSignal();
+      } finally {
+        busyRef.current = false;
+      }
+    };
+    tick();
+    const t = window.setInterval(tick, 1000);
+    const onVis = () => {
+      if (!document.hidden) tick(); // instant refresh when tab returns
+    };
+    document.addEventListener("visibilitychange", onVis);
+    return () => {
+      window.clearInterval(t);
+      document.removeEventListener("visibilitychange", onVis);
+    };
   }, [loadSignal]);
+
+  // Auto-refresh the market scan every 10s (16 symbols would exceed Binance
+  // rate limits at 1s; the headline signal is the per-second one).
   useEffect(() => {
     loadScan();
+    const t = window.setInterval(loadScan, 10000);
+    return () => window.clearInterval(t);
   }, [loadScan]);
 
-  // Live price via Binance public WebSocket.
+  // Live price via Binance WebSocket — with auto-reconnect and a REST
+  // fallback watchdog (mobile browsers suspend sockets aggressively, which
+  // froze the price after a few seconds).
   useEffect(() => {
-    wsRef.current?.close();
-    const ws = new WebSocket(
-      `wss://stream.binance.com:9443/ws/${symbol.toLowerCase()}@trade`
-    );
-    ws.onmessage = (e) => {
+    let closed = false;
+    let ws: WebSocket | null = null;
+    let reconnectT: number | undefined;
+    let lastMsg = Date.now();
+
+    const connect = () => {
+      if (closed) return;
       try {
-        const d = JSON.parse(e.data);
-        if (d.p) setLivePrice(parseFloat(d.p));
+        ws?.close();
+      } catch {}
+      ws = new WebSocket(
+        `wss://stream.binance.com:9443/ws/${symbol.toLowerCase()}@trade`
+      );
+      ws.onmessage = (e) => {
+        lastMsg = Date.now();
+        try {
+          const d = JSON.parse(e.data);
+          if (d.p) setLivePrice(parseFloat(d.p));
+        } catch {}
+      };
+      ws.onclose = () => {
+        if (!closed) reconnectT = window.setTimeout(connect, 2000);
+      };
+      ws.onerror = () => {
+        try {
+          ws?.close();
+        } catch {}
+      };
+      wsRef.current = ws;
+    };
+    connect();
+
+    // Watchdog: if the socket goes quiet >10s, pull price via REST and
+    // force a reconnect.
+    const watchdog = window.setInterval(async () => {
+      if (Date.now() - lastMsg > 10000) {
+        try {
+          const r = await fetch(
+            `https://data-api.binance.vision/api/v3/ticker/price?symbol=${symbol}`
+          );
+          const d = await r.json();
+          if (d.price) setLivePrice(parseFloat(d.price));
+        } catch {}
+        if (!ws || ws.readyState !== WebSocket.OPEN) connect();
+      }
+    }, 5000);
+
+    return () => {
+      closed = true;
+      window.clearInterval(watchdog);
+      if (reconnectT) window.clearTimeout(reconnectT);
+      try {
+        ws?.close();
       } catch {}
     };
-    wsRef.current = ws;
-    return () => ws.close();
   }, [symbol]);
 
   return (
@@ -113,7 +209,7 @@ export default function SignalsPage() {
       {/* Controls */}
       <div className="mb-6 flex flex-wrap items-center gap-3">
         <select value={symbol} onChange={(e) => setSymbol(e.target.value)} className="rounded-lg border border-white/10 bg-white/[0.04] px-3 py-2 text-sm outline-none">
-          {SYMBOLS.map((s) => <option key={s} value={s}>{s}</option>)}
+          {SYMBOLS.map((s) => <option key={s.v} value={s.v}>{s.l}</option>)}
         </select>
         <div className="flex gap-1 rounded-lg border border-white/10 p-1">
           {INTERVALS.map((i) => (
@@ -121,6 +217,10 @@ export default function SignalsPage() {
           ))}
         </div>
         <button onClick={loadSignal} className="rounded-lg border border-white/10 px-3 py-2 text-sm text-slate-300 hover:bg-white/5">↻ Refresh</button>
+        <span className="flex items-center gap-1.5 text-xs text-slate-500">
+          <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-400" />
+          live · refreshing every 1s{lastUpdated ? ` · ${lastUpdated.toLocaleTimeString()}` : ""}
+        </span>
         {livePrice != null && (
           <span className="ml-auto font-mono text-lg">
             <span className="text-slate-500">live </span>${fmt(livePrice, 4)}
@@ -302,7 +402,7 @@ function ChartAnalyzer({ symbol, timeframe }: { symbol: string; timeframe: strin
     setError(null);
     setResult(null);
     try {
-      const res = await fetch("/api/analyze-chart", {
+      const res = await apiFetch("/api/analyze-chart", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ imageBase64: base64, mimeType: mime, symbol, timeframe, note }),

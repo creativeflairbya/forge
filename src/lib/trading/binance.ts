@@ -71,6 +71,8 @@ export const POPULAR_SYMBOLS = [
   "ADAUSDT",
   "DOGEUSDT",
   "AVAXUSDT",
+  "PAXGUSDT", // tokenized gold — tracks XAU/USD
+  "LINKUSDT",
 ];
 
 export const INTERVALS = ["15m", "1h", "4h", "1d"];

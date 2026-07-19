@@ -36,8 +36,8 @@ export async function POST(req: Request) {
     if (!ok) {
       return Response.json({ error: "Invalid credentials" }, { status: 401 });
     }
-    await createSessionCookie();
-    return Response.json({ ok: true, role: "admin" });
+    const token = await createSessionCookie();
+    return Response.json({ ok: true, role: "admin", token });
   }
 
   // Regular user path
@@ -55,8 +55,8 @@ export async function POST(req: Request) {
     .update(users)
     .set({ lastLoginAt: new Date() })
     .where(eq(users.id, u.id));
-  await createUserSession(u.id);
-  return Response.json({ ok: true, role: "user" });
+  const token = await createUserSession(u.id);
+  return Response.json({ ok: true, role: "user", token });
 }
 
 // DELETE — logout (both cookie types).

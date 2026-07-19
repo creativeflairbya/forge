@@ -44,15 +44,18 @@ function parseJson(text: string): Record<string, unknown> | null {
 }
 
 export async function POST(req: Request) {
-  const session = await getSession();
-  if (!session) {
-    return Response.json({ error: "Login required" }, { status: 401 });
-  }
-  if (session.role === "user" && !session.canAnalyze) {
-    return Response.json(
-      { error: "Chart analysis is disabled for your account" },
-      { status: 403 }
-    );
+  // Login required (set ALLOW_PUBLIC_SIGNALS=1 to open temporarily).
+  if (process.env.ALLOW_PUBLIC_SIGNALS !== "1") {
+    const session = await getSession();
+    if (!session) {
+      return Response.json({ error: "Login required" }, { status: 401 });
+    }
+    if (session.role === "user" && !session.canAnalyze) {
+      return Response.json(
+        { error: "Chart analysis is disabled for your account" },
+        { status: 403 }
+      );
+    }
   }
   const body = (await req.json().catch(() => ({}))) as Body;
   if (!body.imageBase64 || !body.mimeType) {
@@ -160,9 +163,16 @@ export async function POST(req: Request) {
 
     return Response.json({ result, techSignal, source: "gemini", id: saved.id });
   } catch (e) {
-    return Response.json(
-      { error: e instanceof Error ? e.message : "Analysis failed" },
-      { status: 502 }
-    );
+    const raw = e instanceof Error ? e.message : "Analysis failed";
+    let friendly = raw;
+    if (/429|RESOURCE_EXHAUSTED|quota/i.test(raw)) {
+      friendly =
+        "Gemini quota/rate limit hit on all available models. Free-tier quota renews automatically (per-minute and daily windows) — wait a bit and retry, or add a paid key in the admin dashboard. Details: " +
+        raw.slice(0, 200);
+    } else if (/401|403|API key/i.test(raw)) {
+      friendly =
+        "The Gemini key was rejected by Google. Open the admin dashboard and run “Test now”, or paste a fresh key from aistudio.google.com.";
+    }
+    return Response.json({ error: friendly }, { status: 502 });
   }
 }

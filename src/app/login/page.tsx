@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
+import { apiFetch, saveToken, clearToken } from "@/lib/client";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -15,18 +16,52 @@ export default function LoginPage() {
     e.preventDefault();
     setErr("");
     setBusy(true);
-    const res = await fetch("/api/auth", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ username, password }),
-    });
-    setBusy(false);
-    if (res.ok) {
+    clearToken(); // drop any stale token from an older session/sandbox
+    try {
+      const res = await fetch("/api/auth", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username, password }),
+      });
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}));
+        setErr(d.error || "Login failed");
+        return;
+      }
       const d = await res.json();
+      saveToken(d.token); // survives blocked cookies (mobile Safari/iframes)
+
+      // Verify the session round-trips before redirecting — but retry on
+      // transient failures (cold starts) and only block when the server
+      // EXPLICITLY rejects the fresh token repeatedly.
+      let established = false;
+      let explicitRejections = 0;
+      for (let i = 0; i < 3; i++) {
+        try {
+          const check = await apiFetch("/api/auth");
+          if (check.ok) {
+            const who = await check.json();
+            if (who.session) {
+              established = true;
+              break;
+            }
+            explicitRejections++;
+          }
+        } catch {}
+        await new Promise((r) => setTimeout(r, 400));
+      }
+      if (!established && explicitRejections >= 3) {
+        setErr(
+          "This browser is rejecting the session repeatedly. Please try a normal (non-private) window, or reload and log in again."
+        );
+        return;
+      }
+      // Established, or transient hiccup — proceed; pages handle 401 safely.
       router.push(d.role === "admin" ? "/admin" : "/signals");
-    } else {
-      const d = await res.json().catch(() => ({}));
-      setErr(d.error || "Login failed");
+    } catch {
+      setErr("Network error — please try again.");
+    } finally {
+      setBusy(false);
     }
   }
 

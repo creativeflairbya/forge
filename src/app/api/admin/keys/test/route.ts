@@ -1,5 +1,6 @@
 import { isAuthenticated } from "@/lib/admin/auth";
 import { getApiKey, recordUsage } from "@/lib/secrets";
+import { geminiText } from "@/lib/ai/gemini";
 
 export const dynamic = "force-dynamic";
 
@@ -16,36 +17,26 @@ export async function POST(req: Request) {
   const started = Date.now();
 
   if (provider === "gemini") {
-    const model = process.env.GEMINI_MODEL || "gemini-2.0-flash";
-    const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          contents: [{ role: "user", parts: [{ text: "Reply with: ok" }] }],
-          generationConfig: { maxOutputTokens: 10 },
-        }),
-      }
-    );
-    const latencyMs = Date.now() - started;
-    const text = await res.text();
-    await recordUsage({
-      provider: "gemini",
-      endpoint: "test",
-      ok: res.ok,
-      statusCode: res.status,
-      latencyMs,
-      error: res.ok ? "" : text.slice(0, 400),
-    });
-    return Response.json({
-      ok: res.ok,
-      statusCode: res.status,
-      latencyMs,
-      message: res.ok
-        ? "Key is valid and responding."
-        : summarize(res.status, text),
-    });
+    // Uses the same model-fallback chain as real calls, so a key that only
+    // has quota on newer models is still reported as valid.
+    try {
+      await geminiText("Reply with: ok");
+      return Response.json({
+        ok: true,
+        statusCode: 200,
+        latencyMs: Date.now() - started,
+        message: "Key is valid and responding.",
+      });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Unknown error";
+      const status = /error (\d{3})/.exec(msg)?.[1];
+      return Response.json({
+        ok: false,
+        statusCode: status ? Number(status) : 502,
+        latencyMs: Date.now() - started,
+        message: summarize(status ? Number(status) : 0, msg),
+      });
+    }
   }
 
   if (provider === "openai") {

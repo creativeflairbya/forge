@@ -1,7 +1,7 @@
 import { db } from "@/db";
 import { adminConfig, users } from "@/db/schema";
 import { eq } from "drizzle-orm";
-import { cookies } from "next/headers";
+import { cookies, headers } from "next/headers";
 import { createHmac, randomBytes, scryptSync, timingSafeEqual } from "crypto";
 import { ensureSchema } from "@/lib/bootstrap";
 
@@ -22,25 +22,37 @@ async function getConfig(key: string): Promise<string | null> {
   return row?.configValue ?? null;
 }
 
+// Atomic upsert — concurrent requests on a fresh database previously raced
+// (duplicate-key crashes → transient 500s → "session couldn't be established").
 async function setConfig(key: string, value: string): Promise<void> {
-  const existing = await getConfig(key);
-  if (existing === null) {
-    await db.insert(adminConfig).values({ configKey: key, configValue: value });
-  } else {
-    await db
-      .update(adminConfig)
-      .set({ configValue: value, updatedAt: new Date() })
-      .where(eq(adminConfig.configKey, key));
-  }
+  await ensureSchema();
+  await db
+    .insert(adminConfig)
+    .values({ configKey: key, configValue: value })
+    .onConflictDoUpdate({
+      target: adminConfig.configKey,
+      set: { configValue: value, updatedAt: new Date() },
+    });
+}
+
+// First-writer-wins variant for bootstrap values that must never be
+// overwritten by a concurrent request (e.g. the session secret).
+async function setConfigIfAbsent(key: string, value: string): Promise<string> {
+  await ensureSchema();
+  await db
+    .insert(adminConfig)
+    .values({ configKey: key, configValue: value })
+    .onConflictDoNothing();
+  return (await getConfig(key)) ?? value;
 }
 
 async function sessionSecret(): Promise<string> {
-  let s = await getConfig("session_secret");
-  if (!s) {
-    s = randomBytes(32).toString("hex");
-    await setConfig("session_secret", s);
-  }
-  return s;
+  const cached = await getConfig("session_secret");
+  if (cached) return cached;
+  // Race-safe: if two requests arrive simultaneously on a fresh DB, both end
+  // up using whichever secret won the insert — never two different secrets
+  // (which previously invalidated freshly issued tokens).
+  return setConfigIfAbsent("session_secret", randomBytes(32).toString("hex"));
 }
 
 export function hashPassword(password: string, salt: string): string {
@@ -54,10 +66,20 @@ export function hashPassword(password: string, salt: string): string {
 export async function ensureAdmin(): Promise<void> {
   const existing = await getConfig("password_hash");
   if (existing) return;
-  const salt = randomBytes(16).toString("hex");
-  await setConfig("admin_username", "admin");
-  await setConfig("password_salt", salt);
-  await setConfig("password_hash", hashPassword(DEFAULT_ADMIN_PASSWORD, salt));
+  // Deterministic bootstrap values: if two requests race on a fresh DB they
+  // write IDENTICAL salt+hash, so no mismatched pair can ever be stored
+  // (a mismatched pair made login impossible → the "session couldn't be
+  // established" symptom). Random salt is used once the password is changed.
+  const salt = createHmac("sha256", "forge-bootstrap")
+    .update(DEFAULT_ADMIN_PASSWORD)
+    .digest("hex")
+    .slice(0, 32);
+  await setConfigIfAbsent("admin_username", "admin");
+  await setConfigIfAbsent("password_salt", salt);
+  await setConfigIfAbsent(
+    "password_hash",
+    hashPassword(DEFAULT_ADMIN_PASSWORD, salt)
+  );
 }
 
 export async function verifyCredentials(
@@ -108,9 +130,7 @@ async function setSigned(cookieName: string, payload: string): Promise<void> {
   });
 }
 
-async function readSigned(cookieName: string): Promise<string[] | null> {
-  const jar = await cookies();
-  const value = jar.get(cookieName)?.value;
+async function verifyValue(value: string | null | undefined): Promise<string[] | null> {
   if (!value) return null;
   const idx = value.lastIndexOf(".");
   if (idx <= 0) return null;
@@ -123,10 +143,28 @@ async function readSigned(cookieName: string): Promise<string[] | null> {
   return payload.split(".");
 }
 
+/**
+ * Read a session from the cookie OR the x-forge-session header.
+ * The header fallback is essential: mobile Safari and embedded iframe
+ * previews block third-party cookies entirely, which previously caused
+ * "login works for a second then bounces back to the login page".
+ */
+async function readSigned(cookieName: string): Promise<string[] | null> {
+  const jar = await cookies();
+  const fromCookie = await verifyValue(jar.get(cookieName)?.value);
+  if (fromCookie) return fromCookie;
+  const h = await headers();
+  return verifyValue(h.get("x-forge-session"));
+}
+
 /* ---------- admin session ---------- */
 
-export async function createSessionCookie(): Promise<void> {
-  await setSigned(COOKIE, `admin.${Date.now() + SESSION_TTL_MS}`);
+// Returns the token so clients can also store it in localStorage and send it
+// via the x-forge-session header when cookies are blocked.
+export async function createSessionCookie(): Promise<string> {
+  const payload = `admin.${Date.now() + SESSION_TTL_MS}`;
+  await setSigned(COOKIE, payload);
+  return `${payload}.${await sign(payload)}`;
 }
 
 export async function clearSessionCookie(): Promise<void> {
@@ -134,6 +172,7 @@ export async function clearSessionCookie(): Promise<void> {
 }
 
 export async function isAuthenticated(): Promise<boolean> {
+  // Check both the admin cookie and the shared header token.
   const parts = await readSigned(COOKIE);
   if (!parts || parts.length !== 2) return false;
   const [who, expiry] = parts;
@@ -142,8 +181,10 @@ export async function isAuthenticated(): Promise<boolean> {
 
 /* ---------- user session ---------- */
 
-export async function createUserSession(userId: number): Promise<void> {
-  await setSigned(USER_COOKIE, `user.${userId}.${Date.now() + SESSION_TTL_MS}`);
+export async function createUserSession(userId: number): Promise<string> {
+  const payload = `user.${userId}.${Date.now() + SESSION_TTL_MS}`;
+  await setSigned(USER_COOKIE, payload);
+  return `${payload}.${await sign(payload)}`;
 }
 
 export async function clearUserSession(): Promise<void> {

@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
+import { apiFetch, saveToken, clearToken } from "@/lib/client";
 
 type KeyRow = {
   id: number;
@@ -57,7 +58,7 @@ export default function AdminPage() {
   const [defaultPw, setDefaultPw] = useState(false);
 
   const checkAuth = useCallback(async () => {
-    const res = await fetch("/api/admin/login");
+    const res = await apiFetch("/api/admin/login");
     const d = await res.json();
     setAuthed(!!d.authenticated);
     setDefaultPw(!!d.defaultPassword);
@@ -70,17 +71,48 @@ export default function AdminPage() {
   async function login(e: React.FormEvent) {
     e.preventDefault();
     setLoginErr("");
-    const res = await fetch("/api/admin/login", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ username, password }),
-    });
-    if (res.ok) {
+    clearToken(); // drop any stale token from an older session/sandbox
+    try {
+      const res = await fetch("/api/admin/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username, password }),
+      });
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}));
+        setLoginErr(d.error || "Login failed");
+        return;
+      }
+      const d = await res.json();
+      saveToken(d.token); // survives blocked cookies (mobile Safari/iframes)
+
+      // Verify with retries; only block on repeated explicit rejection.
+      let established = false;
+      let explicitRejections = 0;
+      for (let i = 0; i < 3; i++) {
+        try {
+          const check = await apiFetch("/api/admin/login");
+          if (check.ok) {
+            const who = await check.json();
+            if (who.authenticated) {
+              established = true;
+              break;
+            }
+            explicitRejections++;
+          }
+        } catch {}
+        await new Promise((r) => setTimeout(r, 400));
+      }
+      if (!established && explicitRejections >= 3) {
+        setLoginErr(
+          "This browser is rejecting the session repeatedly. Please try a normal (non-private) window, or reload and log in again."
+        );
+        return;
+      }
       setPassword("");
       setAuthed(true);
-    } else {
-      const d = await res.json();
-      setLoginErr(d.error || "Login failed");
+    } catch {
+      setLoginErr("Network error — please try again.");
     }
   }
 
@@ -137,11 +169,13 @@ function Dashboard({ onLogout, defaultPw }: { onLogout: () => void; defaultPw: b
 
   const load = useCallback(async () => {
     const [kr, ur] = await Promise.all([
-      fetch("/api/admin/keys"),
-      fetch("/api/admin/usage"),
+      apiFetch("/api/admin/keys"),
+      apiFetch("/api/admin/usage"),
     ]);
     if (kr.status === 401 || ur.status === 401) {
-      // Session expired (or new sandbox) — force re-login instead of failing silently.
+      // Session expired (or new sandbox) — drop the stale token and force
+      // re-login instead of failing silently.
+      clearToken();
       onLogout();
       return;
     }
@@ -165,7 +199,7 @@ function Dashboard({ onLogout, defaultPw }: { onLogout: () => void; defaultPw: b
     setSaving(true);
     setSaveMsg("");
     try {
-      const res = await fetch("/api/admin/keys", {
+      const res = await apiFetch("/api/admin/keys", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ provider, keyValue, tier, note }),
@@ -193,7 +227,7 @@ function Dashboard({ onLogout, defaultPw }: { onLogout: () => void; defaultPw: b
 
   async function testKey(p: string) {
     setTestMsg((m) => ({ ...m, [p]: "Testing…" }));
-    const res = await fetch("/api/admin/keys/test", {
+    const res = await apiFetch("/api/admin/keys/test", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ provider: p }),
@@ -205,19 +239,20 @@ function Dashboard({ onLogout, defaultPw }: { onLogout: () => void; defaultPw: b
 
   async function deleteKey(p: string) {
     if (!confirm(`Remove the ${p} key?`)) return;
-    await fetch(`/api/admin/keys?provider=${p}`, { method: "DELETE" });
+    await apiFetch(`/api/admin/keys?provider=${p}`, { method: "DELETE" });
     load();
   }
 
   async function logout() {
-    await fetch("/api/admin/login", { method: "DELETE" });
+    await apiFetch("/api/admin/login", { method: "DELETE" });
+    clearToken();
     onLogout();
   }
 
   async function changePw(e: React.FormEvent) {
     e.preventDefault();
     setPwMsg("");
-    const res = await fetch("/api/admin/password", {
+    const res = await apiFetch("/api/admin/password", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ current: curPw, next: newPw }),
@@ -400,7 +435,7 @@ function UsersSection() {
   const [busy, setBusy] = useState(false);
 
   const load = useCallback(async () => {
-    const res = await fetch("/api/admin/users");
+    const res = await apiFetch("/api/admin/users");
     if (!res.ok) return;
     const d = await res.json();
     setList(d.users ?? []);
@@ -414,7 +449,7 @@ function UsersSection() {
     e.preventDefault();
     setBusy(true);
     setMsg("");
-    const res = await fetch("/api/admin/users", {
+    const res = await apiFetch("/api/admin/users", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ username, password, canSignals, canAnalyze, canGenerate }),
@@ -432,7 +467,7 @@ function UsersSection() {
   }
 
   async function toggle(u: UserRow, field: "active" | "canSignals" | "canAnalyze" | "canGenerate") {
-    await fetch("/api/admin/users", {
+    await apiFetch("/api/admin/users", {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ id: u.id, [field]: !u[field] }),
@@ -442,7 +477,7 @@ function UsersSection() {
 
   async function resetPw(u: UserRow) {
     if (!confirm(`Reset password for ${u.username}?`)) return;
-    const res = await fetch("/api/admin/users", {
+    const res = await apiFetch("/api/admin/users", {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ id: u.id, resetPassword: true }),
@@ -455,7 +490,7 @@ function UsersSection() {
 
   async function removeUser(u: UserRow) {
     if (!confirm(`Delete user ${u.username}?`)) return;
-    await fetch(`/api/admin/users?id=${u.id}`, { method: "DELETE" });
+    await apiFetch(`/api/admin/users?id=${u.id}`, { method: "DELETE" });
     load();
   }
 

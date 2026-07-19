@@ -7,15 +7,18 @@ export const dynamic = "force-dynamic";
 // GET /api/signals?symbol=BTCUSDT&interval=1h
 // GET /api/signals?scan=1&interval=1h   -> signals for all popular symbols
 export async function GET(req: Request) {
-  const session = await getSession();
-  if (!session) {
-    return Response.json({ error: "Login required" }, { status: 401 });
-  }
-  if (session.role === "user" && !session.canSignals) {
-    return Response.json(
-      { error: "Signal access is disabled for your account" },
-      { status: 403 }
-    );
+  // Login required (set ALLOW_PUBLIC_SIGNALS=1 to open temporarily).
+  if (process.env.ALLOW_PUBLIC_SIGNALS !== "1") {
+    const session = await getSession();
+    if (!session) {
+      return Response.json({ error: "Login required" }, { status: 401 });
+    }
+    if (session.role === "user" && !session.canSignals) {
+      return Response.json(
+        { error: "Signal access is disabled for your account" },
+        { status: 403 }
+      );
+    }
   }
   const url = new URL(req.url);
   const interval = url.searchParams.get("interval") || "1h";
