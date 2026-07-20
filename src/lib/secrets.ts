@@ -2,6 +2,7 @@ import { db } from "@/db";
 import { apiKeys, apiUsage } from "@/db/schema";
 import { eq } from "drizzle-orm";
 import { ensureSchema } from "@/lib/bootstrap";
+import { getProvider } from "@/lib/ai/providers";
 
 /**
  * Resolve a provider API key. Priority:
@@ -9,9 +10,7 @@ import { ensureSchema } from "@/lib/bootstrap";
  *   2. Environment variable fallback.
  * Returns null when no usable key exists.
  */
-export async function getApiKey(
-  provider: "gemini" | "openai" | "openrouter"
-): Promise<string | null> {
+export async function getApiKey(provider: string): Promise<string | null> {
   try {
     await ensureSchema();
     const [row] = await db
@@ -24,16 +23,11 @@ export async function getApiKey(
   } catch {
     // DB unavailable — fall back to env.
   }
-  const envName =
-    provider === "gemini"
-      ? "GEMINI_API_KEY"
-      : provider === "openrouter"
-      ? "OPENROUTER_API_KEY"
-      : "OPENAI_API_KEY";
-  return process.env[envName] ?? null;
+  const envName = getProvider(provider)?.envVar;
+  return envName ? process.env[envName] ?? null : null;
 }
 
-export async function hasKey(provider: "gemini" | "openai" | "openrouter"): Promise<boolean> {
+export async function hasKey(provider: string): Promise<boolean> {
   return (await getApiKey(provider)) !== null;
 }
 

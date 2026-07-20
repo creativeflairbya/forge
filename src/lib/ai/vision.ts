@@ -7,15 +7,20 @@
 
 import { openrouterEnabled, openrouterVision } from "./openrouter";
 import { geminiEnabled, geminiVision } from "./gemini";
+import { anthropicEnabled, anthropicVision } from "./anthropic";
 
 export type VisionResult = {
   text: string;
-  provider: "openrouter" | "gemini";
+  provider: "openrouter" | "gemini" | "anthropic";
   model: string;
 };
 
 export async function visionAvailable(): Promise<boolean> {
-  return (await openrouterEnabled()) || (await geminiEnabled());
+  return (
+    (await openrouterEnabled()) ||
+    (await geminiEnabled()) ||
+    (await anthropicEnabled())
+  );
 }
 
 export async function analyzeImage(
@@ -48,6 +53,16 @@ export async function analyzeImage(
       };
     } catch (e) {
       errors.push(`Gemini: ${e instanceof Error ? e.message : "failed"}`);
+    }
+  }
+
+  // 3. Anthropic Claude — tertiary
+  if (await anthropicEnabled()) {
+    try {
+      const r = await anthropicVision(prompt, imageBase64, mimeType);
+      return { text: r.text, provider: "anthropic", model: r.model };
+    } catch (e) {
+      errors.push(`Anthropic: ${e instanceof Error ? e.message : "failed"}`);
     }
   }
 

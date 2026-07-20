@@ -2,6 +2,7 @@ import { isAuthenticated } from "@/lib/admin/auth";
 import { getApiKey, recordUsage } from "@/lib/secrets";
 import { geminiText } from "@/lib/ai/gemini";
 import { openrouterKeyCheck } from "@/lib/ai/openrouter";
+import { getProvider } from "@/lib/ai/providers";
 
 export const dynamic = "force-dynamic";
 
@@ -12,78 +13,82 @@ export async function POST(req: Request) {
   }
   const body = await req.json().catch(() => ({}));
   const provider = String(body.provider ?? "").toLowerCase();
-  const key = await getApiKey(provider as "gemini" | "openai" | "openrouter");
+  const def = getProvider(provider);
+  if (!def) return Response.json({ error: "Unknown provider" }, { status: 400 });
+
+  const key = await getApiKey(provider);
   if (!key) return Response.json({ error: "No key configured" }, { status: 400 });
 
   const started = Date.now();
 
-  if (provider === "gemini") {
-    // Uses the same model-fallback chain as real calls, so a key that only
-    // has quota on newer models is still reported as valid.
-    try {
-      await geminiText("Reply with: ok");
-      return Response.json({
-        ok: true,
-        statusCode: 200,
-        latencyMs: Date.now() - started,
-        message: "Key is valid and responding.",
+  try {
+    let ok = false;
+    let statusCode = 0;
+    let message = "";
+
+    if (def.test.kind === "openrouter") {
+      const r = await openrouterKeyCheck(key);
+      ok = r.ok;
+      statusCode = r.statusCode;
+      message = r.message;
+    } else if (def.test.kind === "gemini") {
+      try {
+        await geminiText("Reply with: ok");
+        ok = true;
+        statusCode = 200;
+        message = "Key is valid and responding.";
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : "Unknown error";
+        statusCode = Number(/error (\d{3})/.exec(msg)?.[1] ?? 502);
+        message = summarize(statusCode, msg);
+      }
+    } else if (def.test.kind === "anthropic") {
+      const res = await fetch("https://api.anthropic.com/v1/models", {
+        headers: { "x-api-key": key, "anthropic-version": "2023-06-01" },
       });
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : "Unknown error";
-      const status = /error (\d{3})/.exec(msg)?.[1];
-      return Response.json({
-        ok: false,
-        statusCode: status ? Number(status) : 502,
-        latencyMs: Date.now() - started,
-        message: summarize(status ? Number(status) : 0, msg),
+      ok = res.ok;
+      statusCode = res.status;
+      message = res.ok
+        ? "Key is valid."
+        : summarize(res.status, await res.text());
+    } else {
+      // Generic OpenAI-compatible: GET {baseUrl}/models with Bearer auth.
+      const res = await fetch(`${def.test.baseUrl}/models`, {
+        headers: { Authorization: `Bearer ${key}` },
       });
+      ok = res.ok;
+      statusCode = res.status;
+      message = res.ok
+        ? "Key is valid."
+        : summarize(res.status, await res.text());
     }
-  }
 
-  if (provider === "openrouter") {
-    const result = await openrouterKeyCheck(key);
     await recordUsage({
-      provider: "openrouter",
+      provider,
       endpoint: "test",
-      ok: result.ok,
-      statusCode: result.statusCode,
+      ok,
+      statusCode,
       latencyMs: Date.now() - started,
-      error: result.ok ? "" : result.message,
+      error: ok ? "" : message,
     });
-    return Response.json({ ...result, latencyMs: Date.now() - started });
-  }
-
-  if (provider === "openai") {
-    const baseUrl =
-      process.env.OPENAI_BASE_URL?.replace(/\/$/, "") ||
-      "https://api.openai.com/v1";
-    const res = await fetch(`${baseUrl}/models`, {
-      headers: { Authorization: `Bearer ${key}` },
-    });
-    const latencyMs = Date.now() - started;
-    const text = await res.text();
+    return Response.json({ ok, statusCode, latencyMs: Date.now() - started, message });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : "Network error";
     await recordUsage({
-      provider: "openai",
+      provider,
       endpoint: "test",
-      ok: res.ok,
-      statusCode: res.status,
-      latencyMs,
-      error: res.ok ? "" : text.slice(0, 400),
+      ok: false,
+      latencyMs: Date.now() - started,
+      error: msg,
     });
-    return Response.json({
-      ok: res.ok,
-      statusCode: res.status,
-      latencyMs,
-      message: res.ok ? "Key is valid." : summarize(res.status, text),
-    });
+    return Response.json({ ok: false, statusCode: 0, message: msg });
   }
-
-  return Response.json({ error: "Unknown provider" }, { status: 400 });
 }
 
 function summarize(status: number, body: string): string {
   if (status === 429) return "Rate limited / quota exceeded (429).";
-  if (status === 401 || status === 403) return "Invalid or unauthorized key.";
+  if (status === 401 || status === 403)
+    return "Invalid or unauthorized key — the provider rejected it.";
   if (status === 400) return `Bad request (400): ${body.slice(0, 160)}`;
   return `Error ${status}: ${body.slice(0, 160)}`;
 }

@@ -2,6 +2,7 @@ import { db } from "@/db";
 import { apiKeys } from "@/db/schema";
 import { eq } from "drizzle-orm";
 import { isAuthenticated } from "@/lib/admin/auth";
+import { PROVIDER_IDS } from "@/lib/ai/providers";
 
 export const dynamic = "force-dynamic";
 
@@ -49,7 +50,7 @@ export async function POST(req: Request) {
   const tier = body.tier === "paid" ? "paid" : "free";
   const note = String(body.note ?? "").slice(0, 200);
 
-  if (!["gemini", "openai", "openrouter"].includes(provider)) {
+  if (!PROVIDER_IDS.includes(provider as (typeof PROVIDER_IDS)[number])) {
     return Response.json({ error: "Unknown provider" }, { status: 400 });
   }
   if (!keyValue) {

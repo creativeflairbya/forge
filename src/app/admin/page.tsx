@@ -326,8 +326,15 @@ function Dashboard({ onLogout, defaultPw }: { onLogout: () => void; defaultPw: b
                     ⚠ Rate/quota limit hit at {new Date(k.limitedAt).toLocaleString()}. Free quota renews on Google&apos;s schedule (per-minute & daily). Add a paid key to avoid interruptions.
                   </p>
                 )}
-                {k.lastError && k.status !== "active" && (
-                  <p className="mt-2 truncate text-xs text-rose-400/80">Last error: {k.lastError}</p>
+                {k.lastError && (
+                  <p className="mt-2 break-all text-xs text-rose-400/80">
+                    Last error{k.lastStatusCode ? ` (${k.lastStatusCode})` : ""}: {k.lastError.slice(0, 220)}
+                  </p>
+                )}
+                {(t?.errors ?? 0) > 0 && (t?.ok ?? 0) === 0 && (
+                  <p className="mt-2 rounded-lg border border-rose-400/30 bg-rose-400/10 p-2 text-xs text-rose-300">
+                    ⚠ Every call with this key has failed — it is almost certainly invalid or revoked. Replace it and press “Test now”.
+                  </p>
                 )}
                 {testMsg[k.provider] && (
                   <p className="mt-2 text-xs text-slate-300">Test: {testMsg[k.provider]}</p>
@@ -342,9 +349,15 @@ function Dashboard({ onLogout, defaultPw }: { onLogout: () => void; defaultPw: b
           <h3 className="mb-3 text-sm font-semibold">Add / update a key</h3>
           <div className="grid gap-3 sm:grid-cols-2">
             <select value={provider} onChange={(e) => setProvider(e.target.value)} className="rounded-lg border border-white/10 bg-white/[0.04] px-3 py-2 text-sm outline-none">
-              <option value="openrouter">OpenRouter (primary — free vision models)</option>
-              <option value="gemini">Gemini (Google AI Studio)</option>
-              <option value="openai">OpenAI-compatible</option>
+              <option value="openrouter">OpenRouter (primary — free vision models · sk-or-v1-…)</option>
+              <option value="gemini">Google Gemini (AI Studio · AIza…)</option>
+              <option value="openai">OpenAI (sk-…)</option>
+              <option value="anthropic">Anthropic Claude (sk-ant-…)</option>
+              <option value="groq">Groq (free tier · gsk_…)</option>
+              <option value="mistral">Mistral AI</option>
+              <option value="deepseek">DeepSeek (sk-…)</option>
+              <option value="xai">xAI Grok (xai-…)</option>
+              <option value="together">Together AI</option>
             </select>
             <select value={tier} onChange={(e) => setTier(e.target.value)} className="rounded-lg border border-white/10 bg-white/[0.04] px-3 py-2 text-sm outline-none">
               <option value="free">Free tier</option>

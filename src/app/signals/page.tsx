@@ -374,6 +374,11 @@ type AnalyzeResult = {
   risk?: string;
 };
 
+type VisionStatus = {
+  active: string;
+  chain: { provider: string; configured: boolean; status: string }[];
+};
+
 function ChartAnalyzer({ symbol, timeframe }: { symbol: string; timeframe: string }) {
   const [preview, setPreview] = useState<string | null>(null);
   const [base64, setBase64] = useState<string | null>(null);
@@ -383,6 +388,14 @@ function ChartAnalyzer({ symbol, timeframe }: { symbol: string; timeframe: strin
   const [result, setResult] = useState<AnalyzeResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [source, setSource] = useState<string>("");
+  const [vs, setVs] = useState<VisionStatus | null>(null);
+
+  useEffect(() => {
+    apiFetch("/api/vision-status")
+      .then((r) => r.json())
+      .then(setVs)
+      .catch(() => {});
+  }, []);
 
   function onFile(f: File) {
     setError(null);
@@ -428,6 +441,34 @@ function ChartAnalyzer({ symbol, timeframe }: { symbol: string; timeframe: strin
       <p className="mt-1 text-sm text-slate-400">
         Upload a chart screenshot — AI vision (OpenRouter → Gemini fallback chain) reads the pattern, extracts visible data, and cross-checks it with live {symbol} technicals.
       </p>
+
+      {vs && (
+        <div
+          className={`mt-3 rounded-lg border p-3 text-xs ${
+            vs.active === "openrouter"
+              ? "border-emerald-400/30 bg-emerald-400/10 text-emerald-200"
+              : vs.active === "gemini"
+              ? "border-amber-300/30 bg-amber-300/10 text-amber-200"
+              : "border-rose-400/30 bg-rose-400/10 text-rose-300"
+          }`}
+        >
+          {vs.active === "openrouter" && (
+            <>✓ Active provider: <b>OpenRouter</b> (free vision chain: Qwen2.5-VL → GLM-4.5V → Pixtral → InternVL) · Gemini on standby.</>
+          )}
+          {vs.active === "gemini" && (
+            <>⚠ Active provider: <b>Gemini</b> (fallback). OpenRouter is {vs.chain[0].configured ? `configured but ${vs.chain[0].status}` : "not configured"} — add a free key from openrouter.ai/keys in the admin dashboard to enable the primary free vision chain.</>
+          )}
+          {vs.active === "anthropic" && (
+            <>⚠ Active provider: <b>Anthropic Claude</b> (tertiary fallback). Add an OpenRouter key (openrouter.ai/keys, free) for the primary vision chain.</>
+          )}
+          {vs.active === "degraded" && (
+            <>⚠ All configured vision keys are currently marked invalid — analysis will still attempt the full chain. Check keys in the admin dashboard (“Test now”).</>
+          )}
+          {vs.active === "none" && (
+            <>✗ No vision provider configured. Add an OpenRouter key (openrouter.ai/keys, free) or Gemini key in the admin dashboard.</>
+          )}
+        </div>
+      )}
 
       <label className="mt-4 flex cursor-pointer flex-col items-center justify-center rounded-xl border border-dashed border-white/15 bg-black/20 p-6 text-center hover:border-emerald-400/40">
         {preview ? (
