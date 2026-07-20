@@ -49,7 +49,7 @@ export async function POST(req: Request) {
   const tier = body.tier === "paid" ? "paid" : "free";
   const note = String(body.note ?? "").slice(0, 200);
 
-  if (!["gemini", "openai"].includes(provider)) {
+  if (!["gemini", "openai", "openrouter"].includes(provider)) {
     return Response.json({ error: "Unknown provider" }, { status: 400 });
   }
   if (!keyValue) {

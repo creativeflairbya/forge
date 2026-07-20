@@ -10,7 +10,7 @@ import { ensureSchema } from "@/lib/bootstrap";
  * Returns null when no usable key exists.
  */
 export async function getApiKey(
-  provider: "gemini" | "openai"
+  provider: "gemini" | "openai" | "openrouter"
 ): Promise<string | null> {
   try {
     await ensureSchema();
@@ -24,11 +24,16 @@ export async function getApiKey(
   } catch {
     // DB unavailable — fall back to env.
   }
-  const envName = provider === "gemini" ? "GEMINI_API_KEY" : "OPENAI_API_KEY";
+  const envName =
+    provider === "gemini"
+      ? "GEMINI_API_KEY"
+      : provider === "openrouter"
+      ? "OPENROUTER_API_KEY"
+      : "OPENAI_API_KEY";
   return process.env[envName] ?? null;
 }
 
-export async function hasKey(provider: "gemini" | "openai"): Promise<boolean> {
+export async function hasKey(provider: "gemini" | "openai" | "openrouter"): Promise<boolean> {
   return (await getApiKey(provider)) !== null;
 }
 

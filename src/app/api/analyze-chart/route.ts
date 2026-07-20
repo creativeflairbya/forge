@@ -1,6 +1,6 @@
 import { db } from "@/db";
 import { chartAnalyses } from "@/db/schema";
-import { geminiEnabled, geminiVision } from "@/lib/ai/gemini";
+import { analyzeImage, visionAvailable } from "@/lib/ai/vision";
 import { getSession } from "@/lib/admin/auth";
 import { getKlines } from "@/lib/trading/binance";
 import { computeSignal, type Signal } from "@/lib/trading/signals";
@@ -15,19 +15,29 @@ type Body = {
   note?: string;
 };
 
-const PROMPT = (ctx: string) => `You are an expert crypto technical analyst.
-Analyze the attached trading chart image carefully. Identify trend, chart patterns
-(e.g. head & shoulders, triangles, flags), support/resistance, candlestick signals,
-and momentum. ${ctx}
+const PROMPT = (ctx: string) => `You are an expert technical analyst with precise chart-reading skills.
+Analyze the attached trading chart image with maximum accuracy. Work step by step:
+1. OCR / DATA EXTRACTION: read every visible number and label — ticker, timeframe,
+   current price, OHLC values, axis prices, indicator values (RSI, MACD, MA/EMA),
+   volume figures, dates. Extract them exactly as shown.
+2. TREND DETECTION: identify the primary and secondary trend (direction, strength,
+   duration visible), and note any trendline breaks or channel structures.
+3. PATTERNS: identify chart patterns (head & shoulders, double top/bottom,
+   triangles, wedges, flags, cup & handle) and candlestick signals (engulfing,
+   doji, hammer, shooting star) with their locations.
+4. LEVELS: derive support/resistance from actual price levels visible on the axis.
+5. SYNTHESIS: combine everything into an actionable, evidence-based read.
+Prioritize accuracy over speed; only state what is actually visible. ${ctx}
 
 Respond ONLY with strict JSON (no markdown fences):
 {
   "verdict": "BUY" | "SELL" | "HOLD",
   "confidence": <integer 0-100>,
-  "trend": "<short>",
-  "patterns": ["..."],
-  "keyLevels": { "support": "<text>", "resistance": "<text>" },
-  "analysis": "<2-4 sentence actionable read>",
+  "trend": "<primary trend + strength, short>",
+  "patterns": ["<pattern with location>"],
+  "keyLevels": { "support": "<price(s) from chart>", "resistance": "<price(s) from chart>" },
+  "extracted": { "ticker": "<if visible>", "timeframe": "<if visible>", "price": "<if visible>", "indicators": "<visible indicator readings>" },
+  "analysis": "<3-5 sentence detailed, evidence-based read citing extracted data>",
   "risk": "<1 sentence risk note>"
 }`;
 
@@ -91,10 +101,10 @@ export async function POST(req: Request) {
   }
   if (body.note) ctxParts.push(`User note: ${body.note}`);
 
-  if (!(await geminiEnabled())) {
+  if (!(await visionAvailable())) {
     // Graceful fallback: return the computed technical read if we have a symbol.
     if (techSignal) {
-      const analysis = `AI vision is not configured (no GEMINI_API_KEY), so this read is from live Binance technicals. ${techSignal.reasons
+      const analysis = `AI vision is not configured (no OpenRouter or Gemini key), so this read is from live Binance technicals. ${techSignal.reasons
         .map((r) => r.detail)
         .join("; ")}.`;
       const [saved] = await db
@@ -130,23 +140,25 @@ export async function POST(req: Request) {
     return Response.json(
       {
         error:
-          "Image analysis needs GEMINI_API_KEY. Add it (free at aistudio.google.com) or pass a 'symbol' for a technical-only read.",
+          "Image analysis needs an OpenRouter key (free at openrouter.ai/keys) or Gemini key — add one in the admin dashboard, or pass a 'symbol' for a technical-only read.",
       },
       { status: 400 }
     );
   }
 
   try {
-    const text = await geminiVision(
+    const vision = await analyzeImage(
       PROMPT(ctxParts.join(" ")),
       body.imageBase64,
       body.mimeType
     );
-    const parsed = parseJson(text);
-    const result = parsed ?? { verdict: "HOLD", confidence: 50, analysis: text };
+    const parsed = parseJson(vision.text);
+    const result =
+      parsed ?? { verdict: "HOLD", confidence: 50, analysis: vision.text };
 
     const verdict = String(result.verdict ?? "HOLD").toUpperCase();
     const confidence = Number(result.confidence ?? 50);
+    const sourceLabel = `${vision.provider}:${vision.model}`;
 
     const [saved] = await db
       .insert(chartAnalyses)
@@ -155,23 +167,28 @@ export async function POST(req: Request) {
         timeframe: timeframe || "",
         verdict: ["BUY", "SELL", "HOLD"].includes(verdict) ? verdict : "HOLD",
         confidence: Number.isFinite(confidence) ? Math.round(confidence) : 50,
-        analysis: String(result.analysis ?? text).slice(0, 4000),
+        analysis: String(result.analysis ?? vision.text).slice(0, 4000),
         indicators: techSignal?.indicators ?? null,
-        source: "gemini",
+        source: sourceLabel,
       })
       .returning();
 
-    return Response.json({ result, techSignal, source: "gemini", id: saved.id });
+    return Response.json({
+      result,
+      techSignal,
+      source: sourceLabel,
+      id: saved.id,
+    });
   } catch (e) {
     const raw = e instanceof Error ? e.message : "Analysis failed";
     let friendly = raw;
-    if (/429|RESOURCE_EXHAUSTED|quota/i.test(raw)) {
+    if (/429|RESOURCE_EXHAUSTED|quota|exhausted/i.test(raw)) {
       friendly =
-        "Gemini quota/rate limit hit on all available models. Free-tier quota renews automatically (per-minute and daily windows) — wait a bit and retry, or add a paid key in the admin dashboard. Details: " +
+        "All vision models are rate-limited or out of free quota right now. Free quotas renew automatically — retry in a minute, or add a paid key in the admin dashboard. Details: " +
         raw.slice(0, 200);
     } else if (/401|403|API key/i.test(raw)) {
       friendly =
-        "The Gemini key was rejected by Google. Open the admin dashboard and run “Test now”, or paste a fresh key from aistudio.google.com.";
+        "The AI key was rejected by the provider. Open the admin dashboard and run “Test now”, or paste a fresh key (openrouter.ai/keys or aistudio.google.com).";
     }
     return Response.json({ error: friendly }, { status: 502 });
   }

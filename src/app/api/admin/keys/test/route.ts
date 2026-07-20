@@ -1,6 +1,7 @@
 import { isAuthenticated } from "@/lib/admin/auth";
 import { getApiKey, recordUsage } from "@/lib/secrets";
 import { geminiText } from "@/lib/ai/gemini";
+import { openrouterKeyCheck } from "@/lib/ai/openrouter";
 
 export const dynamic = "force-dynamic";
 
@@ -11,7 +12,7 @@ export async function POST(req: Request) {
   }
   const body = await req.json().catch(() => ({}));
   const provider = String(body.provider ?? "").toLowerCase();
-  const key = await getApiKey(provider as "gemini" | "openai");
+  const key = await getApiKey(provider as "gemini" | "openai" | "openrouter");
   if (!key) return Response.json({ error: "No key configured" }, { status: 400 });
 
   const started = Date.now();
@@ -37,6 +38,19 @@ export async function POST(req: Request) {
         message: summarize(status ? Number(status) : 0, msg),
       });
     }
+  }
+
+  if (provider === "openrouter") {
+    const result = await openrouterKeyCheck(key);
+    await recordUsage({
+      provider: "openrouter",
+      endpoint: "test",
+      ok: result.ok,
+      statusCode: result.statusCode,
+      latencyMs: Date.now() - started,
+      error: result.ok ? "" : result.message,
+    });
+    return Response.json({ ...result, latencyMs: Date.now() - started });
   }
 
   if (provider === "openai") {

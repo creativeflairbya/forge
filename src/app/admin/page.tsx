@@ -342,6 +342,7 @@ function Dashboard({ onLogout, defaultPw }: { onLogout: () => void; defaultPw: b
           <h3 className="mb-3 text-sm font-semibold">Add / update a key</h3>
           <div className="grid gap-3 sm:grid-cols-2">
             <select value={provider} onChange={(e) => setProvider(e.target.value)} className="rounded-lg border border-white/10 bg-white/[0.04] px-3 py-2 text-sm outline-none">
+              <option value="openrouter">OpenRouter (primary — free vision models)</option>
               <option value="gemini">Gemini (Google AI Studio)</option>
               <option value="openai">OpenAI-compatible</option>
             </select>

@@ -10,11 +10,15 @@ const GEMINI_BASE =
   "https://generativelanguage.googleapis.com/v1beta/models";
 
 // Tried in order. First success is cached for the process lifetime.
+// "gemini-flash-latest" first: it's Google's evergreen alias that always
+// resolves to the current flash model — pinned versions get retired for new
+// users (e.g. "gemini-2.5-flash is no longer available to new users").
 const MODEL_CANDIDATES = [
-  "gemini-2.5-flash",
-  "gemini-2.5-flash-lite",
-  "gemini-2.0-flash",
   "gemini-flash-latest",
+  "gemini-flash-lite-latest",
+  "gemini-2.5-flash-lite",
+  "gemini-2.5-flash",
+  "gemini-2.0-flash",
 ];
 
 let workingModel: string | null = null;

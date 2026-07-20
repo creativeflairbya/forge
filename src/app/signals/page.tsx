@@ -426,7 +426,7 @@ function ChartAnalyzer({ symbol, timeframe }: { symbol: string; timeframe: strin
         <span>🔎</span> AI Chart Analyzer
       </h2>
       <p className="mt-1 text-sm text-slate-400">
-        Upload a chart screenshot — Gemini reads the pattern and cross-checks it with live {symbol} technicals.
+        Upload a chart screenshot — AI vision (OpenRouter → Gemini fallback chain) reads the pattern, extracts visible data, and cross-checks it with live {symbol} technicals.
       </p>
 
       <label className="mt-4 flex cursor-pointer flex-col items-center justify-center rounded-xl border border-dashed border-white/15 bg-black/20 p-6 text-center hover:border-emerald-400/40">
